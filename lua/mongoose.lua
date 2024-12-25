@@ -65,6 +65,46 @@ local function sanitize_for_json(data)
     return clean
 end
 
+-- Helper function to escape special pattern characters
+local function escape_pattern(text)
+    return text:gsub("[%(%)%.%%%+%-%*%?%[%]%^%$]", "%%%1")
+end
+
+-- Create a mapping table for special key representations
+local special_key_map = {
+    ["<CR>"] = "⏎", -- Return/Enter key
+    ["<Esc>"] = "⎋", -- Escape key
+    ["<Tab>"] = "⇥", -- Tab key
+    ["<BS>"] = "⌫", -- Backspace
+    ["<Space>"] = "␣", -- Space
+}
+
+-- Helper function to format special key sequences
+local function format_key_for_display(key)
+    if not key then return "" end
+
+    -- First handle the <80><fd> sequence
+    local formatted = key:gsub(escape_pattern("<80><fd>"), "")
+
+    -- Handle special cases
+    for pattern, replacement in pairs(special_key_map) do
+        formatted = formatted:gsub(escape_pattern(pattern), replacement)
+    end
+
+    -- Handle single-character keys that should be wrapped
+    if #formatted == 1 then
+        return formatted
+    end
+
+    -- If it's a longer sequence and not already wrapped in brackets, wrap it
+    if not formatted:match("^<.*>$") then
+        return "<" .. formatted .. ">"
+    end
+
+    return formatted
+end
+
+
 -- Load existing statistics from file
 local function load_stats()
     local file = io.open(data_file, "r")
@@ -188,17 +228,46 @@ local function handle_key(key)
     end, 100)
 end
 
+-- Helper function to create consistent table borders
+local function create_table_line(widths, style)
+    local styles = {
+        top    = { "┌", "┐", "┬", "─" },
+        middle = { "├", "┤", "┼", "─" },
+        bottom = { "└", "┘", "┴", "─" }
+    }
+    local chars = styles[style]
+    local parts = { chars[1] }
+
+    for i, width in ipairs(widths) do
+        table.insert(parts, string.rep(chars[4], width))
+        table.insert(parts, i == #widths and chars[2] or chars[3])
+    end
+
+    return table.concat(parts)
+end
+
+-- Function to create a table row with proper alignment
+local function create_table_row(columns, widths, alignments)
+    local parts = { "│" }
+    for i, col in ipairs(columns) do
+        local width = widths[i]
+        local align = alignments[i]
+        local format_str = align == "left" and "%-" .. width .. "s" or "%" .. width .. "s"
+        table.insert(parts, string.format(format_str, col))
+        table.insert(parts, "│")
+    end
+    return table.concat(parts)
+end
+
 function M.show_analytics(specific_filetype)
-    -- If stats is empty, show a helpful message
     if not next(stats) then
         vim.notify("No statistics collected yet. Start typing to gather data!", vim.log.levels.INFO)
         return
     end
 
-    -- Create our floating window setup
     local buf = vim.api.nvim_create_buf(false, true)
-    local width = 70  -- Made wider to accommodate more detailed stats
-    local height = 20 -- Made taller to show more information
+    local width = 80 -- Increased width for better readability
+    local height = 20
 
     local win_opts = {
         relative = 'editor',
@@ -210,41 +279,46 @@ function M.show_analytics(specific_filetype)
         border = 'rounded'
     }
 
-    -- Helper function to calculate time spent
+    -- Helper function to format durations consistently
     local function format_duration(ms)
         if not ms or ms == 0 then return "0ms" end
         if ms < 1000 then return string.format("%.2fms", ms) end
         return string.format("%.2fs", ms / 1000)
     end
 
-    -- Generate content based on whether a specific filetype was requested
-    local content = {}
-    local total_keystrokes = 0
-
-    -- Helper to add a centered header
+    -- Helper to add centered headers
     local function add_centered_header(text)
         local padding = math.floor((width - #text) / 2)
-        table.insert(content, string.rep(" ", padding) .. text)
+        return string.rep(" ", padding) .. text
     end
 
+    -- Define table properties
+    local widths = { 40, 12, 20 } -- Increased key column width
+    local alignments = { "left", "right", "right" }
+    local content = {}
+
     if specific_filetype then
-        -- Show detailed stats for the requested filetype
+        -- Single filetype view
         if not stats[specific_filetype] then
             vim.notify("No statistics available for " .. specific_filetype, vim.log.levels.INFO)
             return
         end
 
-        add_centered_header("🦦 Mongoose Analytics: " .. specific_filetype)
-        table.insert(content, string.rep("=", width))
+        table.insert(content, add_centered_header("🦦 Mongoose Analytics: " .. specific_filetype))
+        table.insert(content, string.rep("═", width))
         table.insert(content, "")
 
         local ft_stats = stats[specific_filetype]
         table.insert(content, string.format("Total Keystrokes: %d", ft_stats.total_keystrokes))
         table.insert(content, string.format("Active Time: %s", format_duration(ft_stats.active_time)))
         table.insert(content, "Most Used Keys:")
-        table.insert(content, string.rep("-", width))
+        table.insert(content, "")
 
-        -- Sort and display keystroke data
+        -- Create keystroke table
+        table.insert(content, create_table_line(widths, "top"))
+        table.insert(content, create_table_row({ "Key", "Count", "Duration" }, widths, alignments))
+        table.insert(content, create_table_line(widths, "middle"))
+
         local sorted_keys = {}
         for _, entry in ipairs(ft_stats.keystrokes) do
             table.insert(sorted_keys, entry)
@@ -253,23 +327,25 @@ function M.show_analytics(specific_filetype)
 
         for i = 1, math.min(15, #sorted_keys) do
             local entry = sorted_keys[i]
-            table.insert(content, string.format(
-                "%-20s Count: %-5d Avg Duration: %s",
-                entry.keys,
-                entry.count,
+            local row = {
+                format_key_for_display(entry.keys),
+                tostring(entry.count),
                 format_duration(entry.duration)
-            ))
+            }
+            table.insert(content, create_table_row(row, widths, alignments))
         end
-    else
-        -- Show overview of all filetypes
-        add_centered_header("🦦 Mongoose Analytics: All Filetypes")
-        table.insert(content, string.rep("=", width))
-        table.insert(content, "")
-        table.insert(content, "Statistics by Filetype:")
-        table.insert(content, string.rep("-", width))
 
-        -- Collect and sort filetype data
+        table.insert(content, create_table_line(widths, "bottom"))
+    else
+        -- Overview of all filetypes
+        table.insert(content, add_centered_header("🦦 Mongoose Analytics: All Filetypes"))
+        table.insert(content, string.rep("═", width))
+        table.insert(content, "")
+
+        local total_keystrokes = 0
         local filetype_stats = {}
+
+        -- Collect statistics
         for ft, data in pairs(stats) do
             table.insert(filetype_stats, {
                 filetype = ft,
@@ -279,28 +355,32 @@ function M.show_analytics(specific_filetype)
             total_keystrokes = total_keystrokes + data.total_keystrokes
         end
 
+        -- Create overview table
+        table.insert(content, create_table_line(widths, "top"))
+        table.insert(content, create_table_row({ "Filetype", "Keystrokes", "Active Time" }, widths, alignments))
+        table.insert(content, create_table_line(widths, "middle"))
+
         table.sort(filetype_stats, function(a, b) return a.keystrokes > b.keystrokes end)
 
-        -- Display total across all filetypes
-        table.insert(content, string.format("Total Keystrokes (all types): %d", total_keystrokes))
-        table.insert(content, "")
-
-        -- Display stats for each filetype
         for _, ft_data in ipairs(filetype_stats) do
-            table.insert(content, string.format(
-                "%-15s Keystrokes: %-6d Active Time: %s",
+            local row = {
                 ft_data.filetype,
-                ft_data.keystrokes,
+                tostring(ft_data.keystrokes),
                 format_duration(ft_data.active_time)
-            ))
+            }
+            table.insert(content, create_table_row(row, widths, alignments))
         end
+
+        table.insert(content, create_table_line(widths, "bottom"))
+        table.insert(content, "")
+        table.insert(content, string.format("Total Keystrokes (all types): %d", total_keystrokes))
     end
 
     -- Set up the window
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, content)
     local win = vim.api.nvim_open_win(buf, true, win_opts)
 
-    -- Window options and keymaps
+    -- Window options
     if vim.api.nvim_win_is_valid(win) then
         vim.wo[win].winhighlight = 'Normal:Normal'
     end
@@ -310,21 +390,19 @@ function M.show_analytics(specific_filetype)
         vim.bo[buf].buftype = 'nofile'
     end
 
-    -- Enhanced keymaps for navigation
+    -- Keymaps
     local opts = { buffer = buf, noremap = true, silent = true }
     vim.keymap.set('n', 'q', ':close<CR>', opts)
     vim.keymap.set('n', '<Esc>', ':close<CR>', opts)
 
-    -- Allow switching between filetypes
+    -- Tab switching functionality
     vim.keymap.set('n', '<Tab>', function()
-        -- Get list of filetypes
         local fts = {}
         for ft, _ in pairs(stats) do
             table.insert(fts, ft)
         end
         table.sort(fts)
 
-        -- Show filetype selector
         vim.ui.select(fts, {
             prompt = 'Select filetype to view:',
             format_item = function(item)
@@ -334,14 +412,13 @@ function M.show_analytics(specific_filetype)
             end
         }, function(choice)
             if choice then
-                -- Close current window and show new stats
                 vim.api.nvim_win_close(win, true)
                 M.show_analytics(choice)
             end
         end)
     end, opts)
 
-    -- Add helpful message about navigation
+    -- Navigation help message
     vim.api.nvim_echo({
         { "Press ",                 "Normal" },
         { "<Tab>",                  "Special" },
