@@ -104,7 +104,6 @@ local function format_key_for_display(key)
     return formatted
 end
 
-
 -- Load existing statistics from file
 local function load_stats()
     local file = io.open(data_file, "r")
@@ -212,9 +211,13 @@ local function handle_key(key)
     if current_time - last_key_time > KEY_TIMEOUT then
         current_keys = {}
     end
+    print("Original key:", vim.inspect(key))
+
+    local sanitized = sanitize_key_sequence(key)
+    print("Sanitized key:", vim.inspect(sanitized))
 
     -- Add new key to sequence
-    table.insert(current_keys, key)
+    table.insert(current_keys, sanitized)
     last_key_time = current_time
 
     -- Process the sequence after a brief delay
