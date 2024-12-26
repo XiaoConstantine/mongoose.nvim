@@ -1,3 +1,27 @@
+---@brief [[
+--- Mongoose Analytics is a Neovim plugin that tracks and analyzes keystroke patterns in your editor.
+--- It provides insights into your typing habits and editor usage patterns by collecting and
+--- visualizing keystroke statistics per filetype.
+---
+--- Features:
+--- - Tracks keystroke sequences and their frequency
+--- - Measures keystroke timing and duration
+--- - Provides filetype-specific analytics
+--- - Persists data between sessions
+--- - Shows analytics in a floating window
+---
+--- Usage:
+--- ```lua
+--- require('mongoose').setup()
+--- ```
+---
+--- Then use the `:Mongoose` command to view analytics for the current buffer.
+---@brief ]]
+
+---@tag mongoose
+
+---@config { ['function_order'] = 'ascending' }
+
 local M = {}
 
 -- Store key usage statistics
@@ -11,7 +35,8 @@ local current_keys = {}
 local last_key_time = 0
 local KEY_TIMEOUT = 1000 -- 1 second timeout for key sequences
 
--- Helper function to get current timestamp in milliseconds
+--- Get current timestamp in milliseconds
+---@return number: Current timestamp in milliseconds
 local function get_timestamp()
     return vim.loop.now()
 end
@@ -105,7 +130,8 @@ local function format_key_for_display(key)
     return formatted
 end
 
--- Load existing statistics from file
+--- Load existing statistics from file
+---@return nil
 local function load_stats()
     local file = io.open(data_file, "r")
     if file then
@@ -120,7 +146,8 @@ local function load_stats()
     end
 end
 
--- Save statistics to file with proper timer management
+--- Save statistics to file with proper timer management
+---@return nil
 local function save_stats()
     -- If a save operation is already scheduled, don't schedule another one
     if is_timer_active then
@@ -160,7 +187,9 @@ local function save_stats()
     end))
 end
 
--- Initialize statistics for a filetype
+--- Initialize statistics for a filetype
+---@param filetype string: The filetype to initialize
+---@return nil
 local function ensure_filetype_stats(filetype)
     if not stats[filetype] then
         stats[filetype] = {
@@ -172,7 +201,10 @@ local function ensure_filetype_stats(filetype)
     end
 end
 
--- Record a keystroke with debouncing
+--- Record a keystroke with debouncing
+---@param keys string: The keystroke sequence to record
+---@param duration number: Duration of the keystroke sequence
+---@return nil
 local function record_keystroke(keys, duration)
     local filetype = vim.bo.filetype or 'unknown'
     ensure_filetype_stats(filetype)
@@ -204,7 +236,9 @@ local function record_keystroke(keys, duration)
     save_stats()
 end
 
--- Process a key event safely
+--- Process a key event safely
+---@param key string: The key event to process
+---@return nil
 local function handle_key(key)
     local current_time = get_timestamp()
 
@@ -212,10 +246,8 @@ local function handle_key(key)
     if current_time - last_key_time > KEY_TIMEOUT then
         current_keys = {}
     end
-    print("Original key:", vim.inspect(key))
 
     local sanitized = sanitize_key_sequence(key)
-    print("Sanitized key:", vim.inspect(sanitized))
 
     -- Add new key to sequence
     table.insert(current_keys, sanitized)
@@ -263,6 +295,9 @@ local function create_table_row(columns, widths, alignments)
     return table.concat(parts)
 end
 
+
+--- Display analytics in a float window
+---@return nil
 function M.show_analytics(specific_filetype)
     if not next(stats) then
         vim.notify("No statistics collected yet. Start typing to gather data!", vim.log.levels.INFO)
@@ -432,7 +467,8 @@ function M.show_analytics(specific_filetype)
     }, false, {})
 end
 
--- Cleanup function for proper timer handling
+--- Cleanup function for proper timer handling
+---@return nil
 local function cleanup()
     if save_timer then
         save_timer:stop()
@@ -451,7 +487,8 @@ local function cleanup()
     is_timer_active = false
 end
 
--- Setup function
+--- Initialize the Mongoose Analytics plugin
+---@return nil
 function M.setup()
     -- Load existing stats
     load_stats()
