@@ -32,6 +32,7 @@ local function sanitize_key_sequence(key_sequence)
     readable = readable:gsub("<80><fd>", "<S-") -- Shift key combinations
     readable = readable:gsub("<80><fc>", "<C-") -- Control key combinations
     readable = readable:gsub("<80><fe>", "<M-") -- Alt/Meta key combinations
+    readable = readable:gsub("<80>kb", "<BS-") -- Backspace
 
     return readable
 end
