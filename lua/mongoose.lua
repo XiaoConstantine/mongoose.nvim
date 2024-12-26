@@ -24,9 +24,55 @@
 
 local M = {}
 
+local DEFAULT_PROVIDERS = {
+  llamacpp = {
+    api_url = "http://localhost:8080/completion",
+    headers = function(_)
+      return {
+        ["Content-Type"] = "application/json",
+      }
+    end,
+    format_request = function(prompt)
+      -- First, let's ensure our prompt is properly formatted
+      if type(prompt) ~= "string" then
+        error "Prompt must be a string"
+      end
+
+      -- Create the request payload
+      local request = {
+        prompt = prompt,
+        n_predict = 2048,
+        temperature = 0.7,
+        -- Adding some additional parameters that might help with analysis
+        stop = { "</s>", "\n\nHuman:", "\n\nAssistant:" }, -- Stop sequences to prevent rambling
+        top_p = 0.9, -- Nucleus sampling parameter
+        echo = false, -- Don't echo the prompt in the response
+      }
+
+      -- Try to encode the request with error handling
+      local ok, encoded = pcall(vim.fn.json_encode, request)
+      if not ok then
+        error("Failed to encode request: " .. tostring(encoded))
+      end
+
+      return encoded
+    end,
+
+    parse_response = function(response)
+      local data = vim.fn.json_decode(response)
+      return data.content
+    end,
+  },
+}
+
+local config = {
+  llm_enabled = false, -- Single flag to control LLM features
+}
+
 -- Store key usage statistics
 local stats = {}
 local data_file = vim.fn.stdpath "data" .. "/mongoose_analytics.json"
+local llm_analysis_file = vim.fn.stdpath "data" .. "/mongoose_llm_analysis.json"
 
 -- Timer management
 local save_timer = nil
@@ -477,6 +523,192 @@ function M.show_analytics(specific_filetype)
   }, false, {})
 end
 
+local function format_keystrokes_for_analysis()
+  -- Create a comprehensive analysis of keystroke patterns
+  local analysis_text = "Here is my detailed Vim usage analysis across different filetypes:\n\n"
+
+  for filetype, data in pairs(stats) do
+    -- Skip internal filetypes and empty strings
+    if not filetype:match "^__" and filetype ~= "" then
+      analysis_text = analysis_text .. string.format("Filetype: %s\n", filetype)
+      analysis_text = analysis_text .. string.format("Total keystrokes: %d\n", data.total_keystrokes)
+
+      -- Sort keystrokes by frequency
+      local sorted_keystrokes = {}
+      for _, entry in ipairs(data.keystrokes) do
+        table.insert(sorted_keystrokes, entry)
+      end
+      table.sort(sorted_keystrokes, function(a, b)
+        return a.count > b.count
+      end)
+
+      -- Add the most frequent patterns
+      analysis_text = analysis_text .. "Most frequent patterns:\n"
+      for i = 1, math.min(15, #sorted_keystrokes) do
+        local entry = sorted_keystrokes[i]
+        analysis_text = analysis_text
+          .. string.format(
+            "  - Command sequence: %s\n    Used %d times, average duration: %.2fms\n",
+            entry.keys,
+            entry.count,
+            entry.duration
+          )
+      end
+      analysis_text = analysis_text .. "\n"
+    end
+  end
+
+  return analysis_text
+end
+
+-- Create the LLM analysis prompt
+local function create_llm_prompt(analytics_text)
+  return string.format(
+    [[
+As an expert Vim user, please analyze the following Vim usage data collected by Mongoose,
+a Vim analytics tool. The data shows keystroke patterns across different filetypes.
+
+%s
+
+Based on this data, please provide:
+
+1. INEFFICIENT PATTERNS: Identify specific inefficient patterns in the user's Vim usage.
+   Consider repetitive keystrokes, slower alternatives to faster commands, and missed
+   opportunities for using more powerful Vim features.
+
+2. RECOMMENDATIONS: For each inefficient pattern, suggest more efficient alternatives.
+   Include specific examples of how to use these alternatives effectively.
+
+3. LEARNING PLAN: Create a prioritized learning plan focusing on the top 3-5 most
+   impactful improvements the user could make. For each improvement, include:
+   - The current inefficient pattern
+   - The recommended alternative
+   - A simple exercise to practice the new approach
+   - Estimated keystroke savings based on their usage patterns
+
+4. ADVANCED TECHNIQUES: Suggest 2-3 advanced Vim techniques that would be particularly
+   beneficial given their current workflow patterns.
+
+Please format your response as a JSON object with these sections as keys. Within each
+section, provide specific, actionable insights rather than general advice.
+]],
+    analytics_text
+  )
+end
+
+-- Helper function to make LLM requests
+local function make_llm_request(prompt)
+  -- Get provider configuration
+  local provider = config.custom_provider or DEFAULT_PROVIDERS[config.provider]
+  vim.notify("Using provider: " .. config.provider, vim.log.levels.INFO)
+
+  local success, result = pcall(provider.format_request, prompt)
+  if not success then
+    local format_error = result
+    -- Handle the error
+    return nil, "Failed to format request: " .. tostring(format_error)
+  end
+
+  vim.notify("Request: " .. tostring(result), vim.log.levels.INFO)
+
+  -- Construct the curl command with better error capture
+  local curl_command = string.format(
+    'curl -s -w "\\n%%{http_code}" -X POST %s -H "Content-Type: application/json" -d \'%s\' 2>&1',
+    provider.api_url,
+    vim.fn.escape(tostring(result), "'\\")
+  )
+
+  local handle = io.popen(curl_command)
+  if not handle then
+    return nil, "Failed to execute request"
+  end
+
+  local response = handle:read "*a"
+  handle:close()
+
+  -- Split response into body and status code
+  local body, status = response:match "^(.+)\n(%d+)$"
+
+  -- Check HTTP status
+  if status ~= "200" then
+    return nil, string.format("HTTP request failed with status %s: %s", status, body)
+  end
+
+  -- Parse the response
+  local ok, result = pcall(provider.parse_response, response)
+  if not ok then
+    return nil, "Failed to parse response"
+  end
+
+  return result
+end
+
+-- The main analysis function
+function M.trigger_background_analysis()
+  -- First, check if LLM features are enabled and configured
+  if not config.llm_enabled then
+    vim.notify("LLM analysis is not enabled. Configure it first with configure_llm()", vim.log.levels.WARN)
+    return
+  end
+
+  -- Read the current analytics data
+  --  local stats = read_stats_file()
+  if not stats then
+    vim.notify("No analytics data available for analysis", vim.log.levels.WARN)
+    return
+  end
+
+  -- Format the data for analysis
+  local usage_data = format_keystrokes_for_analysis()
+
+  local prompt = create_llm_prompt(usage_data)
+
+  -- Create an async operation to avoid blocking Neovim
+  vim.schedule(function()
+    -- Show a notification that analysis is starting
+    vim.notify("Starting Vim usage analysis...", vim.log.levels.INFO)
+
+    -- Make the LLM request
+    local result, err = make_llm_request(prompt)
+
+    if err then
+      vim.notify("Failed to analyze Vim usage: " .. err, vim.log.levels.ERROR)
+      return
+    end
+
+    -- Save the analysis results
+    local analysis = {
+      timestamp = os.time(),
+      analysis = result,
+      source_data = {
+        total_keystrokes = 0, -- We'll calculate this
+        analyzed_filetypes = {}, -- We'll fill this
+      },
+    }
+
+    -- Calculate some metadata about the analyzed data
+    for filetype, data in pairs(stats) do
+      if not filetype:match "^__" and filetype ~= "" then
+        analysis.source_data.total_keystrokes = analysis.source_data.total_keystrokes + data.total_keystrokes
+        table.insert(analysis.source_data.analyzed_filetypes, filetype)
+      end
+    end
+
+    -- Save the analysis to a file
+    local analysis_file = io.open(llm_analysis_file, "w")
+    if analysis_file then
+      local ok, encoded = pcall(vim.fn.json_encode, analysis)
+      if ok then
+        analysis_file:write(encoded)
+        analysis_file:close()
+        vim.notify("Vim usage analysis completed! Use :Mongoose to view results.", vim.log.levels.INFO)
+      else
+        vim.notify("Failed to save analysis results", vim.log.levels.ERROR)
+      end
+    end
+  end)
+end
+
 --- Cleanup function for proper timer handling
 ---@return nil
 local function cleanup()
@@ -495,6 +727,60 @@ local function cleanup()
     save_timer = nil
   end
   is_timer_active = false
+end
+
+function M.configure_llm(opts)
+  -- First, validate the basic requirements
+  if not opts then
+    vim.notify("LLM configuration options are required", vim.log.levels.ERROR)
+    return false
+  end
+
+  -- Handle provider selection
+  if not opts.provider then
+    vim.notify("LLM provider must be specified", vim.log.levels.ERROR)
+    return false
+  end
+
+  -- Reset previous configuration
+  config.llm_enabled = true
+  config.provider = nil
+  config.api_key = nil
+  config.custom_provider = nil
+
+  -- Handle custom provider configuration
+  if type(opts.provider) == "table" then
+    -- Validate custom provider configuration
+    if
+      not opts.provider.api_url
+      or not opts.provider.headers
+      or not opts.provider.format_request
+      or not opts.provider.parse_response
+    then
+      vim.notify("Custom provider missing required fields", vim.log.levels.ERROR)
+      return false
+    end
+    config.custom_provider = opts.provider
+    config.provider = "custom"
+  else
+    -- Handle built-in providers
+    if not DEFAULT_PROVIDERS[opts.provider] then
+      vim.notify("Unknown LLM provider: " .. opts.provider, vim.log.levels.ERROR)
+      return false
+    end
+    config.provider = opts.provider
+  end
+
+  -- Handle API key if required
+  if opts.provider == "anthropic" and not opts.api_key then
+    vim.notify("API key required for Anthropic Claude", vim.log.levels.ERROR)
+    return false
+  end
+  config.api_key = opts.api_key
+
+  -- If we got here, configuration is valid
+  config.llm_enabled = true
+  return true
 end
 
 --- Initialize the Mongoose Analytics plugin
@@ -517,6 +803,19 @@ function M.setup()
   vim.api.nvim_create_user_command("Mongoose", function()
     M.show_analytics()
   end, {})
+
+  vim.api.nvim_create_user_command("MongooseLLMAnalyze", function()
+    -- Before triggering analysis, make sure LLM features are properly configured
+    if not config.llm_enabled then
+      vim.notify("LLM analysis is not enabled. Please configure LLM features first.", vim.log.levels.WARN)
+      return
+    end
+
+    -- Call our analysis function
+    M.trigger_background_analysis()
+  end, {
+    desc = "Analyze Vim usage patterns using LLM",
+  })
 
   -- Clean up on exit
   vim.api.nvim_create_autocmd("VimLeavePre", {
