@@ -59,8 +59,19 @@ local DEFAULT_PROVIDERS = {
     end,
 
     parse_response = function(response)
-      local data = vim.fn.json_decode(response)
-      return data.content
+      local ok, decoded = pcall(vim.fn.json_decode, response)
+      if not ok then
+        error("Failed to decode JSON response: " .. tostring(decoded))
+      end
+
+      -- If your API returns the content in a specific field, extract it
+      -- For example, if the response looks like: {"content": "actual content"}
+      if decoded.content then
+        return decoded.content
+      else
+        -- If the response is the content directly
+        return decoded
+      end
     end,
   },
 }
@@ -572,7 +583,7 @@ a Vim analytics tool. The data shows keystroke patterns across different filetyp
 
 Based on this data, please provide:
 
-1. INEFFICIENT PATTERNS: Identify specific inefficient patterns in the user's Vim usage.
+1. INEFFICIENT PATTERNS: Identify specific inefficient patterns in the user Vim usage.
    Consider repetitive keystrokes, slower alternatives to faster commands, and missed
    opportunities for using more powerful Vim features.
 
@@ -609,14 +620,14 @@ local function make_llm_request(prompt)
     return nil, "Failed to format request: " .. tostring(format_error)
   end
 
-  vim.notify("Request: " .. tostring(result), vim.log.levels.INFO)
-
   -- Construct the curl command with better error capture
   local curl_command = string.format(
     'curl -s -w "\\n%%{http_code}" -X POST %s -H "Content-Type: application/json" -d \'%s\' 2>&1',
     provider.api_url,
     vim.fn.escape(tostring(result), "'\\")
   )
+
+  --vim.notify("Curl command: " .. curl_command, vim.log.levels.INFO)
 
   local handle = io.popen(curl_command)
   if not handle then
@@ -628,19 +639,30 @@ local function make_llm_request(prompt)
 
   -- Split response into body and status code
   local body, status = response:match "^(.+)\n(%d+)$"
+  if not status then
+    return nil, "Failed to parse response status code"
+  end
 
-  -- Check HTTP status
   if status ~= "200" then
-    return nil, string.format("HTTP request failed with status %s: %s", status, body)
+    return nil, string.format("HTTP request failed with status %s: %s", status, body or "unknown error")
   end
 
-  -- Parse the response
-  local ok, result = pcall(provider.parse_response, response)
+  -- At this point, 'body' contains just the JSON response without the status code
+  -- Let's add some debug logging
+  --vim.notify("Debug - Response body: " .. body, vim.log.levels.DEBUG)
+
+  -- Parse the response body
+  local ok, resp = pcall(provider.parse_response, body)
   if not ok then
-    return nil, "Failed to parse response"
+    return nil, "Failed to parse response: " .. tostring(resp)
   end
 
-  return result
+  -- Make sure we got a valid response
+  if not resp then
+    return nil, "Empty response from server"
+  end
+
+  return resp
 end
 
 -- The main analysis function
