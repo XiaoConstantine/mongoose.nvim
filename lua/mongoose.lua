@@ -147,6 +147,39 @@ local function sanitize_for_json(data)
   return clean
 end
 
+-- Utility function to load JSON data from a file
+-- This function handles all the common file reading and JSON parsing logic
+---@param filepath string: Path to the JSON file to load
+---@param default_value any: Value to return if the file doesn't exist or is invalid
+---@return any: The parsed JSON data or the default value
+local function load_json_file(filepath, default_value)
+  -- Try to open the file
+  local file = io.open(filepath, "r")
+  if not file then
+    -- Return the default value if we can't open the file
+    return default_value
+  end
+
+  -- Read the entire file content
+  local content = file:read "*all"
+  file:close()
+
+  -- Check if we have actual content to parse
+  if not content or content == "" then
+    return default_value
+  end
+
+  -- Try to decode the JSON content
+  local ok, decoded = pcall(vim.fn.json_decode, content)
+  if not ok then
+    -- If JSON parsing fails, log an error and return the default value
+    vim.notify(string.format("Failed to parse JSON from %s: %s", filepath, decoded), vim.log.levels.ERROR)
+    return default_value
+  end
+
+  return decoded
+end
+
 -- Helper function to escape special pattern characters
 local function escape_pattern(text)
   return text:gsub("[%(%)%.%%%+%-%*%?%[%]%^%$]", "%%%1")
@@ -189,19 +222,16 @@ local function format_key_for_display(key)
 end
 
 --- Load existing statistics from file
----@return nil
+---@return table: Loaded stats
 local function load_stats()
-  local file = io.open(data_file, "r")
-  if file then
-    local content = file:read "*all"
-    file:close()
-    if content and content ~= "" then
-      local ok, decoded = pcall(vim.fn.json_decode, content)
-      if ok then
-        stats = decoded
-      end
-    end
-  end
+  return load_json_file(data_file, stats)
+end
+
+-- Helper function to load LLM analysis results
+---@return table|nil: The loaded LLM analysis or nil if not available
+local function load_llm_analysis()
+  -- We pass nil as the default value for LLM analysis
+  return load_json_file(llm_analysis_file, nil)
 end
 
 --- Save statistics to file with proper timer management
@@ -809,7 +839,7 @@ end
 ---@return nil
 function M.setup()
   -- Load existing stats
-  load_stats()
+  stats = load_stats()
 
   -- Create autocmd group
   local group = vim.api.nvim_create_augroup("MongooseAnalytics", { clear = true })
