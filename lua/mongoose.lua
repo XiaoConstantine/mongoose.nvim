@@ -231,7 +231,7 @@ end
 ---@return table|nil: The loaded LLM analysis or nil if not available
 local function load_llm_analysis()
   -- We pass nil as the default value for LLM analysis
-  return load_json_file(llm_analysis_file, nil)
+  return load_json_file(llm_analysis_file, {})
 end
 
 --- Save statistics to file with proper timer management
@@ -385,6 +385,140 @@ local function create_table_row(columns, widths, alignments)
     table.insert(parts, "│")
   end
   return table.concat(parts)
+end
+-- Function to display LLM analysis results in a floating window
+function M.show_llm_analysis(previous_filetype)
+  -- Try to read the analysis file
+  local analysis = load_llm_analysis()
+
+  -- Create a new buffer for the analysis
+  local buf = vim.api.nvim_create_buf(false, true)
+  local width = 100 -- Wider window for analysis results
+  local height = 30
+
+  -- Configure the floating window
+  local win_opts = {
+    relative = "editor",
+    width = width,
+    height = height,
+    col = (vim.o.columns - width) / 2,
+    row = (vim.o.lines - height) / 2,
+    style = "minimal",
+    border = "rounded",
+  }
+  if not analysis then
+    vim.notify("No LLM analysis results available. Run :MongooseLLMAnalyze first.", vim.log.levels.WARN)
+    return
+  end
+
+  -- Format the analysis content
+  local display_content = {
+    "🦦 Mongoose LLM Analysis Results",
+    string.rep("═", width),
+    "",
+    "Analysis timestamp: " .. os.date("%Y-%m-%d %H:%M:%S", analysis.timestamp),
+    "Analyzed data:",
+    string.format("  - Total keystrokes: %d", analysis.source_data.total_keystrokes),
+    string.format("  - Filetypes: %s", table.concat(analysis.source_data.analyzed_filetypes, ", ")),
+    "",
+    "═══ Inefficient Patterns ═══",
+  }
+
+  -- Format the analysis sections
+  local function add_section(title, content)
+    table.insert(display_content, "")
+    table.insert(display_content, title)
+    table.insert(display_content, string.rep("─", #title))
+
+    if type(content) == "string" then
+      -- Split string content into wrapped lines
+      for line in content:gmatch "[^\n]+" do
+        -- Word wrap long lines
+        while #line > width - 4 do
+          local break_point = line:sub(1, width - 4):match ".*%s+"
+          if break_point then
+            table.insert(display_content, "  " .. break_point:match "^%s*(.-)%s*$")
+            line = line:sub(#break_point + 1)
+          else
+            break
+          end
+        end
+        table.insert(display_content, "  " .. line)
+      end
+    elseif type(content) == "table" then
+      for _, item in ipairs(content) do
+        table.insert(display_content, "  • " .. item)
+      end
+    end
+  end
+
+  -- Add each analysis section
+  if type(analysis.analysis) == "table" then
+    if analysis.analysis.inefficient_patterns then
+      add_section("Inefficient Patterns", analysis.analysis.inefficient_patterns)
+    end
+    if analysis.analysis.recommendations then
+      add_section("Recommendations", analysis.analysis.recommendations)
+    end
+    if analysis.analysis.learning_plan then
+      add_section("Learning Plan", analysis.analysis.learning_plan)
+    end
+    if analysis.analysis.advanced_techniques then
+      add_section("Advanced Techniques", analysis.analysis.advanced_techniques)
+    end
+  else
+    -- Handle case where analysis is a string
+    add_section("Analysis Results", analysis.analysis)
+  end
+
+  -- Set the buffer content
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, display_content)
+
+  -- Open the window
+  local win = vim.api.nvim_open_win(buf, true, win_opts)
+
+  -- Configure the window and buffer
+  if vim.api.nvim_win_is_valid(win) then
+    vim.wo[win].wrap = true
+    vim.wo[win].conceallevel = 2
+    vim.wo[win].concealcursor = "n"
+    vim.wo[win].winhighlight = "Normal:Normal"
+  end
+
+  if vim.api.nvim_buf_is_valid(buf) then
+    vim.bo[buf].modifiable = false
+    vim.bo[buf].buftype = "nofile"
+
+    -- Set up keymaps for the analysis window
+    local opts = { buffer = buf, noremap = true, silent = true }
+    vim.keymap.set("n", "q", function()
+      -- Only try to close the window if it's valid
+      if win and vim.api.nvim_win_is_valid(win) then
+        vim.api.nvim_win_close(win, true)
+      end
+      -- Small delay to ensure window cleanup is complete
+      vim.defer_fn(function()
+        -- Reopen the analytics window with the previous filetype
+        M.show_analytics(previous_filetype)
+      end, 10)
+    end, opts)
+    vim.keymap.set("n", "<Esc>", ":close<CR>", opts)
+
+    -- Add scrolling keymaps
+    vim.keymap.set("n", "j", "gj", opts)
+    vim.keymap.set("n", "k", "gk", opts)
+    vim.keymap.set("n", "<C-d>", "<C-d>zz", opts)
+    vim.keymap.set("n", "<C-u>", "<C-u>zz", opts)
+  end
+
+  -- Show navigation help
+  vim.api.nvim_echo({
+    { "Navigation: ", "Normal" },
+    { "j/k", "Special" },
+    { " to scroll, ", "Normal" },
+    { "q", "Special" },
+    { " to close", "Normal" },
+  }, false, {})
 end
 
 --- Display analytics in a float window
@@ -554,11 +688,24 @@ function M.show_analytics(specific_filetype)
     end)
   end, opts)
 
+  vim.keymap.set("n", "l", function()
+    -- Close the current analytics window
+    vim.api.nvim_win_close(win, true)
+    local current_filetype = specific_filetype
+    if win and vim.api.nvim_win_is_valid(win) then
+      vim.api.nvim_win_close(win, true)
+    end
+    -- Show the LLM analysis window
+    require("mongoose").show_llm_analysis(current_filetype)
+  end, opts)
+
   -- Navigation help message
   vim.api.nvim_echo({
     { "Press ", "Normal" },
     { "<Tab>", "Special" },
     { " to switch filetypes, ", "Normal" },
+    { "l", "Special" },
+    { " llm analysis results, ", "Normal" },
     { "q", "Special" },
     { " to close", "Normal" },
   }, false, {})
