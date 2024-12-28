@@ -26,9 +26,9 @@ Mongoose silently watches your editing patterns and provides valuable insights a
     config = function()
         require("mongoose").setup()
         -- Optional: Add local llm for analysis
-		require("mongoose").configure_llm({
-			provider = "llamacpp",
-		})
+        require("mongoose").configure_llm({
+            provider = "llamacpp",
+        })
 
         -- Optional: Add a keymap to show analytics
         vim.keymap.set('n', '<leader>ma', '<cmd>Mongoose<CR>', {
@@ -36,11 +36,11 @@ Mongoose silently watches your editing patterns and provides valuable insights a
             desc = "Show Mongoose Analytics"
         })
 
-		-- Optional: Add keybinding for LLM analysis
-		vim.keymap.set("n", "<leader>ml", "<cmd>MongooseLLMAnalyze<cr>", {
-			silent = true,
-			desc = "Analyze Vim usage with LLM",
-		})
+        -- Optional: Add keybinding for LLM analysis
+        vim.keymap.set("n", "<leader>ml", "<cmd>MongooseLLMAnalyze<cr>", {
+            silent = true,
+            desc = "Analyze Vim usage with LLM",
+        })
     end
 }
 ```
