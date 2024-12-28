@@ -11,6 +11,8 @@ Mongoose silently watches your editing patterns and provides valuable insights a
 - Shows your most frequently used key sequences
 - Maintains statistics across sessions
 - Provides real-time analytics through a floating window
+- Offers AI-powered analysis of your Vim usage patterns
+- Provides personalized recommendations for improvement
 - Zero impact on editor performance
 
 ## Installation
@@ -23,12 +25,22 @@ Mongoose silently watches your editing patterns and provides valuable insights a
     event = "VeryLazy",
     config = function()
         require("mongoose").setup()
+        -- Optional: Add local llm for analysis
+		require("mongoose").configure_llm({
+			provider = "llamacpp",
+		})
 
         -- Optional: Add a keymap to show analytics
         vim.keymap.set('n', '<leader>ma', '<cmd>Mongoose<CR>', {
             silent = true,
             desc = "Show Mongoose Analytics"
         })
+
+		-- Optional: Add keybinding for LLM analysis
+		vim.keymap.set("n", "<leader>ml", "<cmd>MongooseLLMAnalyze<cr>", {
+			silent = true,
+			desc = "Analyze Vim usage with LLM",
+		})
     end
 }
 ```
@@ -59,11 +71,20 @@ Mongoose starts tracking your keystrokes automatically after setup. To view your
 
 - Use the command `:Mongoose`
 - Or use the default keymap `<leader>ma` (if configured)
+- Run `:MongooseLLMAnalyze` to generate an AI analysis of your editing patterns
+- View the analysis by pressing `l` in the Mongoose analytics window
 
 The analytics window shows:
 - Total keystrokes for the current filetype
 - Most frequently used key sequences
 - Average duration for each sequence
+
+Get personalized recommendations for:
+- Inefficient patterns in your workflow
+- More efficient alternatives
+- A structured learning plan
+- Advanced Vim techniques suited to your style
+
 
 ## Understanding the Analytics
 
