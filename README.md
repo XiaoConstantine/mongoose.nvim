@@ -23,6 +23,9 @@ Mongoose silently watches your editing patterns and provides valuable insights a
 {
     "XiaoConstantine/mongoose.nvim",
     event = "VeryLazy",
+    dependencies = {
+        "nvim-lua/plenary.nvim",
+    },
     config = function()
         require("mongoose").setup()
         -- Optional: Add local llm for analysis
@@ -50,8 +53,25 @@ Mongoose silently watches your editing patterns and provides valuable insights a
 ```lua
 use {
     'XiaoConstantine/mongoose.nvim',
+    requires = { 'nvim-lua/plenary.nvim' },
     config = function()
+        -- Basic setup
         require('mongoose').setup()
+
+        -- Optional: Configure LLM integration
+        require("mongoose").configure_llm({
+            provider = "llamacpp",
+        })
+
+        -- Optional: Add keybindings
+        vim.keymap.set('n', '<leader>ma', '<cmd>Mongoose<CR>', {
+            silent = true,
+            desc = "Show Mongoose Analytics"
+        })
+        vim.keymap.set("n", "<leader>ml", "<cmd>MongooseLLMAnalyze<cr>", {
+            silent = true,
+            desc = "Analyze Vim usage with LLM",
+        })
     end
 }
 ```

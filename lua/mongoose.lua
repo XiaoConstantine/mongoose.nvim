@@ -785,61 +785,41 @@ section, provide specific, actionable insights rather than general advice.
 end
 
 -- Helper function to make LLM requests
-local function make_llm_request(prompt)
+local function make_llm_request(prompt, callback)
   -- Get provider configuration
   local provider = config.custom_provider or DEFAULT_PROVIDERS[config.provider]
   vim.notify("Using provider: " .. config.provider, vim.log.levels.INFO)
 
-  local success, result = pcall(provider.format_request, prompt)
+  local success, request_body = pcall(provider.format_request, prompt)
   if not success then
-    local format_error = result
-    -- Handle the error
-    return nil, "Failed to format request: " .. tostring(format_error)
+    callback(nil, "Failed to format request: " .. tostring(request_body))
+    return
   end
 
-  -- Construct the curl command with better error capture
-  local curl_command = string.format(
-    'curl -s -w "\\n%%{http_code}" -X POST %s -H "Content-Type: application/json" -d \'%s\' 2>&1',
-    provider.api_url,
-    vim.fn.escape(tostring(result), "'\\")
-  )
+  -- Use plenary.curl for the request
+  require("plenary.curl").post(provider.api_url, {
+    headers = {
+      ["Content-Type"] = "application/json",
+    },
+    body = request_body,
+    callback = vim.schedule_wrap(function(response)
+      if response.status ~= 200 then
+        callback(
+          nil,
+          string.format("HTTP request failed with status %s: %s", response.status, response.body or "unknown error")
+        )
+        return
+      end
 
-  --vim.notify("Curl command: " .. curl_command, vim.log.levels.INFO)
-
-  local handle = io.popen(curl_command)
-  if not handle then
-    return nil, "Failed to execute request"
-  end
-
-  local response = handle:read "*a"
-  handle:close()
-
-  -- Split response into body and status code
-  local body, status = response:match "^(.+)\n(%d+)$"
-  if not status then
-    return nil, "Failed to parse response status code"
-  end
-
-  if status ~= "200" then
-    return nil, string.format("HTTP request failed with status %s: %s", status, body or "unknown error")
-  end
-
-  -- At this point, 'body' contains just the JSON response without the status code
-  -- Let's add some debug logging
-  --vim.notify("Debug - Response body: " .. body, vim.log.levels.DEBUG)
-
-  -- Parse the response body
-  local ok, resp = pcall(provider.parse_response, body)
-  if not ok then
-    return nil, "Failed to parse response: " .. tostring(resp)
-  end
-
-  -- Make sure we got a valid response
-  if not resp then
-    return nil, "Empty response from server"
-  end
-
-  return resp
+      -- Parse the response using the provider's parser
+      local ok, resp = pcall(provider.parse_response, response.body)
+      if not ok then
+        callback(nil, "Failed to parse response: " .. tostring(resp))
+        return
+      end
+      callback(resp, nil)
+    end),
+  })
 end
 
 -- The main analysis function
@@ -859,52 +839,51 @@ function M.trigger_background_analysis()
 
   -- Format the data for analysis
   local usage_data = format_keystrokes_for_analysis()
-
   local prompt = create_llm_prompt(usage_data)
 
-  -- Create an async operation to avoid blocking Neovim
-  vim.schedule(function()
-    -- Show a notification that analysis is starting
-    vim.notify("Starting Vim usage analysis...", vim.log.levels.INFO)
-
-    -- Make the LLM request
-    local result, err = make_llm_request(prompt)
-
+  vim.notify("Starting Vim usage analysis...", vim.log.levels.INFO)
+  make_llm_request(prompt, function(result, err)
+    -- This callback runs when the request completes
     if err then
-      vim.notify("Failed to analyze Vim usage: " .. err, vim.log.levels.ERROR)
+      vim.schedule(function()
+        vim.notify("Failed to analyze Vim usage: " .. err, vim.log.levels.ERROR)
+      end)
       return
     end
 
-    -- Save the analysis results
-    local analysis = {
-      timestamp = os.time(),
-      analysis = result,
-      source_data = {
-        total_keystrokes = 0, -- We'll calculate this
-        analyzed_filetypes = {}, -- We'll fill this
-      },
-    }
+    -- Process successful result
+    vim.schedule(function()
+      -- Create the analysis object
+      local analysis = {
+        timestamp = os.time(),
+        analysis = result,
+        source_data = {
+          total_keystrokes = 0,
+          analyzed_filetypes = {},
+        },
+      }
 
-    -- Calculate some metadata about the analyzed data
-    for filetype, data in pairs(stats) do
-      if not filetype:match "^__" and filetype ~= "" then
-        analysis.source_data.total_keystrokes = analysis.source_data.total_keystrokes + data.total_keystrokes
-        table.insert(analysis.source_data.analyzed_filetypes, filetype)
+      -- Calculate metadata about the analyzed data
+      for filetype, data in pairs(stats) do
+        if not filetype:match "^__" and filetype ~= "" then
+          analysis.source_data.total_keystrokes = analysis.source_data.total_keystrokes + data.total_keystrokes
+          table.insert(analysis.source_data.analyzed_filetypes, filetype)
+        end
       end
-    end
 
-    -- Save the analysis to a file
-    local analysis_file = io.open(llm_analysis_file, "w")
-    if analysis_file then
-      local ok, encoded = pcall(vim.fn.json_encode, analysis)
-      if ok then
-        analysis_file:write(encoded)
-        analysis_file:close()
-        vim.notify("Vim usage analysis completed! Use :Mongoose to view results.", vim.log.levels.INFO)
-      else
-        vim.notify("Failed to save analysis results", vim.log.levels.ERROR)
+      -- Save the analysis to a file
+      local analysis_file = io.open(llm_analysis_file, "w")
+      if analysis_file then
+        local ok, encoded = pcall(vim.fn.json_encode, analysis)
+        if ok then
+          analysis_file:write(encoded)
+          analysis_file:close()
+          vim.notify("Vim usage analysis completed! Use :Mongoose to view results.", vim.log.levels.INFO)
+        else
+          vim.notify("Failed to save analysis results", vim.log.levels.ERROR)
+        end
       end
-    end
+    end)
   end)
 end
 
@@ -985,6 +964,11 @@ end
 --- Initialize the Mongoose Analytics plugin
 ---@return nil
 function M.setup()
+  local has_plenary, _ = pcall(require, "plenary.curl")
+  if not has_plenary then
+    vim.notify("Mongoose requires plenary.nvim for LLM analysis. Please install it first.", vim.log.levels.ERROR)
+    return
+  end
   -- Load existing stats
   stats = load_stats()
 
